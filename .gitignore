@@ -13,3 +13,21 @@ bazel-testlogs
 bazel-zoekt
 
 .DS_STORE
+zoekt
+zoekt-index
+zoekt-webserver
+zoekt-mirror-github
+zoekt-server
+zoekt-git-index
+.devenv
+.zoekt
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
