@@ -1,18 +1,23 @@
 package zoekt
 
 import (
+	"context"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/sourcegraph/zoekt/query"
 )
 
-// We compare 2 simple shards before and after the transformation
-// explode(merge(shard1, shard2)). We expect the input and output shards to be
-// identical.
+// We compare simple shards before and after the transformation
+// explode(merge(shard1, shard2)).
+//
+// The exploded shards are expected to be semantically identical (same docs,
+// contents, and branches), but may not be byte-identical because the on-disk
+// format changed (v16 -> v17).
 func TestExplode(t *testing.T) {
-	simpleShards := []string{
+	v16Shards := []string{
 		"./testdata/shards/repo_v16.00000.zoekt",
 		"./testdata/shards/repo2_v16.00000.zoekt",
 	}
@@ -22,7 +27,7 @@ func TestExplode(t *testing.T) {
 
 	// merge
 	var files []IndexFile
-	for _, fn := range simpleShards {
+	for _, fn := range v16Shards {
 		f, err := os.Open(fn)
 		if err != nil {
 			t.Fatal(err)
@@ -87,40 +92,74 @@ func TestExplode(t *testing.T) {
 		}
 	}
 
-	for _, s := range simpleShards {
-		checkSameShards(t, s, filepath.Join(tmpDir, filepath.Base(s)))
-	}
-}
-
-// checkSameShards compares 2 shards byte by byte. The shards are expected to be
-// small enough to be read in all at once.
-func checkSameShards(t *testing.T, shard1, shard2 string) {
-	t.Helper()
-	b1, err := os.ReadFile(shard1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	b2, err := os.ReadFile(shard2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// We could also use bytes.Equal, but the output of cmd.Diff is very helpful for
-	// differences in metadata.
-	d := cmp.Diff(b1, b2)
-	if d == "" {
-		return
-	}
-
-	if *update {
-		t.Logf("updating %s", shard1)
-		err := os.WriteFile(shard1, b2, 0o600)
+	for _, s := range v16Shards {
+		wantRepo, _, err := ReadMetadataPath(s)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return
+		if len(wantRepo) != 1 {
+			t.Fatal("this test assumes that shard contains only 1 repo")
+		}
+		gotPath := ShardName(tmpDir, wantRepo[0].Name, IndexFormatVersion, 0)
+		checkEquivalentShards(t, s, gotPath)
+	}
+}
+
+// checkEquivalentShards compares 2 shards semantically via search results over
+// all documents (query.Const(true) + Whole=true).
+func checkEquivalentShards(t *testing.T, shard1, shard2 string) {
+	t.Helper()
+
+	s1, err := loadShardForTest(shard1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+
+	s2, err := loadShardForTest(shard2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	ctx := context.Background()
+	q := &query.Const{Value: true}
+	opts := &SearchOptions{Whole: true}
+
+	r1, err := s1.Search(ctx, q, opts)
+	if err != nil {
+		t.Fatalf("Search(%s): %v", shard1, err)
+	}
+	r2, err := s2.Search(ctx, q, opts)
+	if err != nil {
+		t.Fatalf("Search(%s): %v", shard2, err)
 	}
 
-	t.Fatalf("-%s\n+%s:\n%s", shard1, shard2, d)
+	clearScores(r1)
+	clearScores(r2)
+
+	if d := cmp.Diff(r1.Files, r2.Files); d != "" {
+		t.Fatalf("shards not equivalent (-%s +%s):\n%s", shard1, shard2, d)
+	}
+}
+
+func loadShardForTest(fn string) (Searcher, error) {
+	f, err := os.Open(fn)
+	if err != nil {
+		return nil, err
+	}
+
+	iFile, err := NewIndexFile(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	s, err := NewSearcher(iFile)
+	if err != nil {
+		iFile.Close()
+		return nil, err
+	}
+
+	return s, nil
 }

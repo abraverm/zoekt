@@ -182,7 +182,7 @@ func TestDirWatcherLoadLatest(t *testing.T) {
 	// 	t.Fatalf("got %v, want 'empty'", err)
 	// }
 
-	want := zoekt.NextIndexFormatVersion
+	want := zoekt.IndexFormatVersion
 	shardLatest := filepath.Join(dir, fmt.Sprintf("foo_v%d.00000.zoekt", want))
 
 	for delta := -1; delta <= 1; delta++ {

@@ -361,7 +361,7 @@ var readVersions = []struct {
 	IndexFormatVersion: zoekt.IndexFormatVersion,
 	FeatureVersion:     zoekt.FeatureVersion,
 }, {
-	IndexFormatVersion: zoekt.NextIndexFormatVersion,
+	IndexFormatVersion: 16, // Support reading v16 simple shards.
 	FeatureVersion:     zoekt.FeatureVersion,
 }}
 

@@ -128,9 +128,8 @@ func (s *DirectoryWatcher) scan() error {
 	for _, fn := range fs {
 		name, version := versionFromPath(fn)
 
-		// In the case of downgrades, avoid reading
-		// newer index formats.
-		if version > zoekt.IndexFormatVersion && version > zoekt.NextIndexFormatVersion {
+		// Avoid reading newer index formats.
+		if version > zoekt.IndexFormatVersion {
 			continue
 		}
 

@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"io"
@@ -16,12 +17,13 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/query"
 )
 
 var update = flag.Bool("update", false, "update golden file")
 
-// ensure we don't regress on how we build v16
-func TestBuildv16(t *testing.T) {
+// ensure we don't regress on how we build the current shard format.
+func TestBuildv17(t *testing.T) {
 	dir := t.TempDir()
 
 	opts := Options{
@@ -49,6 +51,8 @@ func TestBuildv16(t *testing.T) {
 		}
 	}
 
+	// We compare against an existing v16 golden shard semantically (not byte-for-byte),
+	// since the on-disk format changed in v17.
 	wantP := filepath.Join("../testdata/shards", "repo_v16.00000.zoekt")
 
 	// fields indexTime and id depend on time. For this test, we copy the fields from
@@ -64,7 +68,7 @@ func TestBuildv16(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotP := filepath.Join(dir, "repo_v16.00000.zoekt")
+	gotP := filepath.Join(dir, "repo_v17.00000.zoekt")
 
 	if *update {
 		data, err := os.ReadFile(gotP)
@@ -78,18 +82,81 @@ func TestBuildv16(t *testing.T) {
 		return
 	}
 
-	got, err := os.ReadFile(gotP)
+	wantSearcher, err := loadShard(wantP)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := os.ReadFile(wantP)
+	defer wantSearcher.Close()
+
+	gotSearcher, err := loadShard(gotP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gotSearcher.Close()
+
+	ctx := context.Background()
+	q := &query.Const{Value: true}
+	sopts := &zoekt.SearchOptions{Whole: true}
+
+	wantRes, err := wantSearcher.Search(ctx, q, sopts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRes, err := gotSearcher.Search(ctx, q, sopts)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if d := cmp.Diff(want, got); d != "" {
-		t.Errorf("mismatch (-want +got):\n%s", d)
+	// Normalize non-deterministic fields (scores/checksums/debug).
+	for i := range wantRes.Files {
+		wantRes.Files[i].Score = 0
+		for j := range wantRes.Files[i].LineMatches {
+			wantRes.Files[i].LineMatches[j].Score = 0
+		}
+		for j := range wantRes.Files[i].ChunkMatches {
+			wantRes.Files[i].ChunkMatches[j].Score = 0
+			wantRes.Files[i].ChunkMatches[j].BestLineMatch = 0
+		}
+		wantRes.Files[i].Checksum = nil
+		wantRes.Files[i].Debug = ""
 	}
+	for i := range gotRes.Files {
+		gotRes.Files[i].Score = 0
+		for j := range gotRes.Files[i].LineMatches {
+			gotRes.Files[i].LineMatches[j].Score = 0
+		}
+		for j := range gotRes.Files[i].ChunkMatches {
+			gotRes.Files[i].ChunkMatches[j].Score = 0
+			gotRes.Files[i].ChunkMatches[j].BestLineMatch = 0
+		}
+		gotRes.Files[i].Checksum = nil
+		gotRes.Files[i].Debug = ""
+	}
+
+	if d := cmp.Diff(wantRes.Files, gotRes.Files); d != "" {
+		t.Errorf("semantic mismatch (-want +got):\n%s", d)
+	}
+}
+
+func loadShard(fn string) (zoekt.Searcher, error) {
+	f, err := os.Open(fn)
+	if err != nil {
+		return nil, err
+	}
+
+	iFile, err := zoekt.NewIndexFile(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	s, err := zoekt.NewSearcher(iFile)
+	if err != nil {
+		iFile.Close()
+		return nil, err
+	}
+
+	return s, nil
 }
 
 func TestFlags(t *testing.T) {

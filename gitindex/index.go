@@ -179,8 +179,24 @@ func setTemplates(repo *zoekt.Repository, u *url.URL, typ string) error {
 // getCommit returns a tree object for the given reference.
 func getCommit(repo *git.Repository, prefix, ref string) (*object.Commit, error) {
 	sha1, err := repo.ResolveRevision(plumbing.Revision(ref))
-	// ref might be a branch name (e.g. "master") add branch prefix and try again.
 	if err != nil {
+		// ref might be a branch name (e.g. "master"). Try common namespaces.
+		if !strings.HasPrefix(ref, "refs/") {
+			// Local branch
+			sha1, err = repo.ResolveRevision(plumbing.Revision(filepath.Join("refs/heads", ref)))
+		}
+	}
+	if err != nil {
+		// Remote-tracking branch (e.g. "origin/adaptive")
+		if !strings.HasPrefix(ref, "refs/") {
+			sha1, err = repo.ResolveRevision(plumbing.Revision(filepath.Join("refs/remotes", ref)))
+		}
+	}
+	// Backwards compat for existing callers: add branch prefix and try again.
+	if err != nil {
+		if prefix != "" && !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
 		sha1, err = repo.ResolveRevision(plumbing.Revision(filepath.Join(prefix, ref)))
 	}
 	if err != nil {
@@ -346,6 +362,12 @@ type Options struct {
 }
 
 func expandBranches(repo *git.Repository, bs []string, prefix string) ([]string, error) {
+	// Normalize prefix to include trailing '/' if set, since we trim it from
+	// reference names (e.g. "refs/heads" -> "refs/heads/").
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
 	var result []string
 	for _, b := range bs {
 		// Sourcegraph: We disable resolving refs. We want to return the exact ref
@@ -361,12 +383,21 @@ func expandBranches(repo *git.Repository, bs []string, prefix string) ([]string,
 		}
 
 		if strings.Contains(b, "*") {
-			iter, err := repo.Branches()
+			// If the user did not set a custom prefix (defaults to refs/heads/ from zoekt-git-index),
+			// expand globs across both local and remote-tracking branches without requiring -prefix.
+			expandAllBranches := prefix == "" || prefix == "refs/heads/"
+
+			// Expand globs over references under the given prefix.
+			//
+			// Important: repo.Branches() only iterates local heads (refs/heads/*).
+			// We want to support indexing remote-tracking branches too (e.g. refs/remotes/origin/*),
+			// so we iterate all references and filter by prefix.
+			iter, err := repo.References()
 			if err != nil {
 				return nil, err
 			}
-
 			defer iter.Close()
+
 			for {
 				ref, err := iter.Next()
 				if err == io.EOF {
@@ -376,14 +407,46 @@ func expandBranches(repo *git.Repository, bs []string, prefix string) ([]string,
 					return nil, err
 				}
 
-				name := ref.Name().Short()
-				if matched, err := filepath.Match(b, name); err != nil {
-					return nil, err
-				} else if !matched {
+				refName := ref.Name().String()
+				if expandAllBranches {
+					// Only include local heads and remote-tracking branches.
+					if !strings.HasPrefix(refName, "refs/heads/") && !strings.HasPrefix(refName, "refs/remotes/") {
+						continue
+					}
+				} else {
+					if prefix != "" && !strings.HasPrefix(refName, prefix) {
+						continue
+					}
+				}
+				// Match against the name relative to prefix so users can pass patterns like
+				// "*" (all branches under prefix) or "release/*".
+				//
+				// For the default prefix case (expandAllBranches), use the short name:
+				// - refs/heads/tests -> "tests"
+				// - refs/remotes/origin/adaptive -> "origin/adaptive"
+				name := ""
+				if expandAllBranches {
+					name = ref.Name().Short()
+				} else {
+					name = strings.TrimPrefix(refName, prefix)
+				}
+
+				matched := false
+				if b == "*" {
+					// Treat "*" as "all branches", including remote-tracking branches like "origin/foo".
+					matched = true
+				} else {
+					var err error
+					matched, err = filepath.Match(b, name)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if !matched {
 					continue
 				}
 
-				result = append(result, strings.TrimPrefix(name, prefix))
+				result = append(result, name)
 			}
 			continue
 		}

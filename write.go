@@ -99,7 +99,8 @@ func writePostings(w *writer, s *postingsBuilder, ngramText *simpleSection,
 }
 
 func (b *IndexBuilder) Write(out io.Writer) error {
-	next := b.indexFormatVersion == NextIndexFormatVersion
+	// Compound shards (multiple repos) supported in v17+.
+	next := b.indexFormatVersion >= 17
 
 	buffered := bufio.NewWriterSize(out, 1<<20)
 	defer buffered.Flush()
@@ -130,7 +131,7 @@ func (b *IndexBuilder) Write(out io.Writer) error {
 
 	toc.branchMasks.start(w)
 	for _, m := range b.branchMasks {
-		w.U64(m)
+		toc.branchMasks.addItem(w, m)
 	}
 	toc.branchMasks.end(w)
 

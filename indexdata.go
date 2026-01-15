@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"hash/crc64"
 	"log"
-	"math/bits"
 	"slices"
 	"unicode/utf8"
 
@@ -68,13 +67,13 @@ type indexData struct {
 	// rune offsets for the file name boundaries
 	fileNameEndRunes []uint32
 
-	fileBranchMasks []uint64
+	fileBranchMasks [][]byte
 
-	// mask (power of 2) => name
-	branchNames []map[uint]string
+	// bit position => name
+	branchNames []map[int]string
 
-	// name => mask (power of 2)
-	branchIDs []map[string]uint
+	// name => bit position
+	branchIDs []map[string]int
 
 	metaData     IndexMetadata
 	repoMetaData []Repository
@@ -255,8 +254,15 @@ func (d *indexData) calculateNewLinesStats(start, end uint32) (count, defaultCou
 		// branchMask is a bitmask of the branches for a document. Zoekt by
 		// convention represents the default branch as the lowest bit.
 		branchMask := d.fileBranchMasks[i]
-		isDefault := (branchMask & 1) == 1
-		others := uint64(bits.OnesCount64(branchMask >> 1))
+		isDefault := getBit(branchMask, 0)
+
+		// Count set bits excluding the first (default) branch.
+		others := uint64(0)
+		iterateBits(branchMask, func(bit int) {
+			if bit > 0 {
+				others++
+			}
+		})
 
 		// this is readNewlines but only reading the size of each section which
 		// corresponds to the number of newlines.
@@ -308,7 +314,9 @@ func (d *indexData) memoryUse() int {
 	sz += len(d.checksums)
 	sz += 2 * len(d.repos)
 	sz += 8 * len(d.runeDocSections)
-	sz += 8 * len(d.fileBranchMasks)
+	for _, m := range d.fileBranchMasks {
+		sz += len(m)
+	}
 	sz += d.contentNgrams.SizeBytes()
 	sz += d.fileNameNgrams.SizeBytes()
 	return sz

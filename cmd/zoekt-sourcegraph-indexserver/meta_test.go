@@ -54,7 +54,13 @@ func TestMergeMeta(t *testing.T) {
 	if err := mergeMeta(opts); err != nil {
 		t.Fatal(err)
 	}
-	repos, _, _ := zoekt.ReadMetadataPath(repoFns[3])
+	repos, _, err := zoekt.ReadMetadataPath(repoFns[3])
+	if err != nil {
+		t.Fatalf("ReadMetadataPath failed: %v", err)
+	}
+	if len(repos) == 0 {
+		t.Fatal("ReadMetadataPath returned empty repos")
+	}
 	if got, want := repos[0].RawConfig["public"], "0"; got != want {
 		t.Fatalf("failed to update metadata of repo3. Got public %q want %q", got, want)
 	}
